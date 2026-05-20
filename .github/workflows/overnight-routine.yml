@@ -1,0 +1,82 @@
+name: Career-Ops Overnight Routine
+
+# Runs 5 times overnight: 12am, 2am, 4am, 6am, 8am US Eastern Time.
+# US Eastern = UTC-5 (EST) or UTC-4 (EDT). Cron is UTC.
+# During EDT (roughly mid-March to early November): 12am ET = 04:00 UTC.
+# During EST (early November to mid-March): 12am ET = 05:00 UTC.
+# This cron targets EDT (adjust if needed when DST flips).
+
+on:
+  schedule:
+    # 12am, 2am, 4am, 6am, 8am ET (EDT) -> 04:00, 06:00, 08:00, 10:00, 12:00 UTC
+    - cron: '0 4,6,8,10,12 * * *'
+  workflow_dispatch:      # manual trigger from GitHub UI
+    inputs:
+      reason:
+        description: 'Why running manually'
+        required: false
+        default: 'ad-hoc'
+
+concurrency:
+  group: career-ops-overnight
+  cancel-in-progress: false
+
+jobs:
+  overnight-routine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write       # needed to push
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install deps
+        run: |
+          npm install
+          npm install -g @anthropic-ai/claude-code
+          npx playwright install --with-deps chromium
+
+      - name: Configure git
+        run: |
+          git config user.email "career-ops-bot@users.noreply.github.com"
+          git config user.name "career-ops overnight bot"
+
+      - name: Run orchestration (scan + pipeline + cleanup)
+        id: run
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          bash scripts/overnight-run.sh
+
+      - name: Retry once on failure
+        if: failure() && steps.run.outcome == 'failure'
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          echo "First attempt failed — retrying once..."
+          bash scripts/overnight-run.sh
+
+      - name: Push results
+        if: always()
+        run: |
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "overnight: $(date -u +%Y-%m-%dT%H:%MZ) scan+pipeline+cleanup"
+            # Retry push with backoff
+            for i in 1 2 3 4; do
+              git push origin main && break || sleep $((2**i))
+            done
+          else
+            echo "No changes to push."
+          fi
