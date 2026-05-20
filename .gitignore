@@ -46,3 +46,8 @@ bun.lock
 .claude/memory/
 career-dashboard
 package-lock.json
+
+# Documentation snapshots (examples/) — always tracked, even when the
+# filename would otherwise be ignored by patterns above. Keep this
+# block at the END of .gitignore so it overrides every earlier rule.
+!examples/**
